@@ -3,3 +3,4 @@ dist/
 .wrangler/
 .env
 *.log
+.DS_Store
