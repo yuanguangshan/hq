@@ -8,5 +8,8 @@
 		"database_name": "qhhq",
 		"database_id": "e4dfaafb-4297-43c5-8d67-e721d8c8c0af"
 	  }
-	]
+	],
+	"triggers": {
+	  "crons": ["30 8 * * *"]
+	}
   }
