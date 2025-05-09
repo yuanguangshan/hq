@@ -1,21 +1,87 @@
 const code_to_mkt = {
-	// 大连商品交易所 (DCE)
-	c: "DCE", m: "DCE", y: "DCE", a: "DCE", b: "DCE", p: "DCE", fb: "DCE", bb: "DCE", jd: "DCE", 
-	l: "DCE", v: "DCE", pp: "DCE", j: "DCE", jm: "DCE", i: "DCE", eg: "DCE", eb: "DCE", cs: "DCE", 
-	// 上海期货交易所 (SHFE)
-	cu: "SHFE", al: "SHFE", zn: "SHFE", pb: "SHFE", ni: "SHFE", sn: "SHFE", au: "SHFE", ag: "SHFE", 
-	rb: "SHFE", wr: "SHFE", hc: "SHFE", ss: "SHFE", fu: "SHFE", bu: "SHFE", ru: "SHFE", nr: "SHFE", 
-	sp: "SHFE", 
-	// 郑州商品交易所 (CZCE)
-	CF: "CZCE", CY: "CZCE", SR: "CZCE", RM: "CZCE", MA: "CZCE", TA: "CZCE", FG: "CZCE", 
-	ZC: "CZCE", SF: "CZCE", SM: "CZCE", LR: "CZCE", PM: "CZCE", RS: "CZCE", OI: "CZCE", 
-	RI: "CZCE", WH: "CZCE", JR: "CZCE", AP: "CZCE", CJ: "CZCE", UR: "CZCE", SA: "CZCE", 
-	// 中国金融期货交易所 (CFFEX)
-	IF: "CFFEX", IC: "CFFEX", IH: "CFFEX", T: "CFFEX", TF: "CFFEX", TS: "CFFEX", 
-	// 上海国际能源交易中心 (INE)
-	sc: "INE", lu: "INE", bc: "INE"
-  };
-  
+	"a": "dce",
+	"ag": "shfe",
+	"al": "shfe",
+	"ao": "shfe",
+	"ap": "czce",
+	"au": "shfe",
+	"b": "dce",
+	"bb": "dce",
+	"bc": "ine",
+	"br": "shfe",
+	"bu": "shfe",
+	"c": "dce",
+	"cf": "czce",
+	"cj": "czce",
+	"cs": "dce",
+	"cu": "shfe",
+	"cy": "czce",
+	"eb": "dce",
+	"ec": "ine",
+	"eg": "dce",
+	"fb": "dce",
+	"fg": "czce",
+	"fu": "shfe",
+	"hc": "shfe",
+	"i": "dce",
+	"ic": "cffex",
+	"if": "cffex",
+	"ih": "cffex",
+	"im": "cffex",
+	"j": "dce",
+	"jd": "dce",
+	"jm": "dce",
+	"jr": "czce",
+	"l": "dce",
+	"lc": "gfex",
+	"lg": "dce",
+	"lh": "dce",
+	"lr": "czce",
+	"lu": "ine",
+	"m": "dce",
+	"ma": "czce",
+	"ni": "shfe",
+	"nr": "ine",
+	"oi": "czce",
+	"p": "dce",
+	"pb": "shfe",
+	"pf": "czce",
+	"pg": "dce",
+	"pk": "czce",
+	"pm": "czce",
+	"pp": "dce",
+	"pr": "czce",
+	"ps": "gfex",
+	"px": "czce",
+	"rb": "shfe",
+	"ri": "czce",
+	"rm": "czce",
+	"rr": "dce",
+	"rs": "czce",
+	"ru": "shfe",
+	"sa": "czce",
+	"sc": "ine",
+	"sf": "czce",
+	"sh": "czce",
+	"si": "gfex",
+	"sm": "czce",
+	"sn": "shfe",
+	"sp": "shfe",
+	"sr": "czce",
+	"ss": "shfe",
+	"t": "cffex",
+	"ta": "czce",
+	"tf": "cffex",
+	"tl": "cffex",
+	"ts": "cffex",
+	"ur": "czce",
+	"v": "dce",
+	"wh": "czce",
+	"wr": "shfe",
+	"y": "dce",
+	"zc": "czce",
+	"zn": "shfe",
+  }; 
   function getMarket(code) {
 	// 移除数字
 	let code2 = code.replace(/\d/g, '');
@@ -44,7 +110,10 @@ const code_to_mkt = {
 	});
   }
   
-  let codes = ["rbm", "cum"]; // 可补充
+//   let codes = ["rbm", "cum"]; // 可补充
+	let codes = Array.from(
+	new Set(Object.keys(code_to_mkt).map(code => code.toLowerCase() + 'm'))
+  );
   
   function getBeijingTime() {
 	let now = new Date(Date.now() + 8 * 3600 * 1000);
