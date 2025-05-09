@@ -1,0 +1,12 @@
+{
+	"name": "hq",
+	"main": "src/index.js",
+	"compatibility_date": "2024-05-09",
+	"d1_databases": [
+	  {
+		"binding": "DB",
+		"database_name": "qhhq",
+		"database_id": "e4dfaafb-4297-43c5-8d67-e721d8c8c0af"
+	  }
+	]
+  }
