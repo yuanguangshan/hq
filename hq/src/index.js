@@ -26,12 +26,53 @@ const code_to_mkt = {
 	});
   }
   
-  // 可配置抓取的 codes
-  const codes = ["rbm", "cum"]; // ...可补充
+  let codes = ["rbm", "cum"]; // 可补充
   
   function getBeijingTime() {
 	let now = new Date(Date.now() + 8 * 3600 * 1000);
 	return now.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  
+  async function fetchAndSaveAllCodes(env) {
+	const codeList = codes;
+	const update_time = getBeijingTime();
+  
+	await env.DB.exec(
+	  "CREATE TABLE IF NOT EXISTS minute_klines (" +
+	  "timestamp TEXT," +
+	  "code TEXT," +
+	  "open REAL," +
+	  "close REAL," +
+	  "high REAL," +
+	  "low REAL," +
+	  "volume REAL," +
+	  "amount REAL," +
+	  "average REAL," +
+	  "update_time TEXT" +
+	  ")"
+	);
+  
+	let inserted = 0, failed = [];
+	for (const code of codeList) {
+	  const klineRows = await fetchKline(code);
+	  if (!klineRows) { failed.push(code); continue; }
+	  for (const row of klineRows) {
+		try {
+		  await env.DB.prepare(
+			"INSERT INTO minute_klines (timestamp, code, open, close, high, low, volume, amount, average, update_time) " +
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		  ).bind(
+			row.timestamp, code,
+			row.open, row.close, row.high, row.low, row.volume, row.amount, row.average,
+			update_time
+		  ).run();
+		  inserted += 1;
+		} catch (e) {
+		  // 错误处理
+		}
+	  }
+	}
+	return { inserted, failed };
   }
   
   export default {
@@ -39,56 +80,20 @@ const code_to_mkt = {
 	  if (request.method === 'POST') {
 		let req;
 		try { req = await request.json(); } catch (_) { req = {}; }
-		let codeList = Array.isArray(req.codes) ? req.codes : codes;
-		let update_time = getBeijingTime();
-  
-		// 1. 建表语句：用字符串拼接，单行写法
-		await env.DB.exec(
-		  "CREATE TABLE IF NOT EXISTS minute_klines (" +
-		  "timestamp TEXT," +
-		  "code TEXT," +
-		  "open REAL," +
-		  "close REAL," +
-		  "high REAL," +
-		  "low REAL," +
-		  "volume REAL," +
-		  "amount REAL," +
-		  "average REAL," +
-		  "update_time TEXT" +
-		  ")"
-		);
-  
-		let inserted = 0, failed = [];
-		for (const code of codeList) {
-		  const klineRows = await fetchKline(code);
-		  if (!klineRows) { failed.push(code); continue; }
-		  for (const row of klineRows) {
-			try {
-			  await env.DB.prepare(
-				// 插入语句也不要分号，单行写法
-				"INSERT INTO minute_klines (timestamp, code, open, close, high, low, volume, amount, average, update_time) " +
-				"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-			  ).bind(
-				row.timestamp, code,
-				row.open, row.close, row.high, row.low, row.volume, row.amount, row.average,
-				update_time
-			  ).run();
-			  inserted += 1;
-			} catch (e) {
-			  // 可加错误处理
-			}
-		  }
-		}
-		return Response.json({ inserted, failed }, { status: 200 });
+		if (req.codes) codes = req.codes;
+		const result = await fetchAndSaveAllCodes(env);
+		return Response.json(result, { status: 200 });
 	  }
-  
 	  if (request.method === 'GET') {
 		const { results } = await env.DB.prepare(
 		  "SELECT * FROM minute_klines ORDER BY timestamp DESC LIMIT 100"
 		).all();
 		return Response.json(results);
 	  }
-  
 	  return new Response('Use POST for data fetch and save, or GET for query.', { status: 400 });
+	},
+  
+	async scheduled(event, env, ctx) {
+	  await fetchAndSaveAllCodes(env);
 	}
-  }
+  };
