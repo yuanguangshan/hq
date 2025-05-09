@@ -1,15 +1,5 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
-
 const code_to_mkt = {
-	c: "DCE", cu: "SHFE", rb: "SHFE", /* ...补充全部 */ 
+	c: "DCE", cu: "SHFE", rb: "SHFE", /* ...补充全部 */
   };
   
   function getMarket(code) {
@@ -52,20 +42,21 @@ const code_to_mkt = {
 		let codeList = Array.isArray(req.codes) ? req.codes : codes;
 		let update_time = getBeijingTime();
   
-		await env.DB.exec(`
-		  CREATE TABLE IF NOT EXISTS minute_klines (
-			timestamp TEXT,
-			code TEXT,
-			open REAL,
-			close REAL,
-			high REAL,
-			low REAL,
-			volume REAL,
-			amount REAL,
-			average REAL,
-			update_time TEXT
-		  );
-		`);
+		// 1. 建表语句：用字符串拼接，单行写法
+		await env.DB.exec(
+		  "CREATE TABLE IF NOT EXISTS minute_klines (" +
+		  "timestamp TEXT," +
+		  "code TEXT," +
+		  "open REAL," +
+		  "close REAL," +
+		  "high REAL," +
+		  "low REAL," +
+		  "volume REAL," +
+		  "amount REAL," +
+		  "average REAL," +
+		  "update_time TEXT" +
+		  ")"
+		);
   
 		let inserted = 0, failed = [];
 		for (const code of codeList) {
@@ -74,22 +65,27 @@ const code_to_mkt = {
 		  for (const row of klineRows) {
 			try {
 			  await env.DB.prepare(
-				`INSERT INTO minute_klines (timestamp, code, open, close, high, low, volume, amount, average, update_time)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+				// 插入语句也不要分号，单行写法
+				"INSERT INTO minute_klines (timestamp, code, open, close, high, low, volume, amount, average, update_time) " +
+				"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 			  ).bind(
 				row.timestamp, code,
 				row.open, row.close, row.high, row.low, row.volume, row.amount, row.average,
 				update_time
 			  ).run();
 			  inserted += 1;
-			} catch (e) { /* 可加错误处理 */ }
+			} catch (e) {
+			  // 可加错误处理
+			}
 		  }
 		}
 		return Response.json({ inserted, failed }, { status: 200 });
 	  }
   
 	  if (request.method === 'GET') {
-		const { results } = await env.DB.prepare("SELECT * FROM minute_klines ORDER BY timestamp DESC LIMIT 100;").all();
+		const { results } = await env.DB.prepare(
+		  "SELECT * FROM minute_klines ORDER BY timestamp DESC LIMIT 100"
+		).all();
 		return Response.json(results);
 	  }
   
