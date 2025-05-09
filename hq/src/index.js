@@ -1,4 +1,4 @@
-//可连接github进行构建
+//可连接github进行构建,并在github中进行修改
 const code_to_mkt = {
 	"a": "dce",
 	"ag": "shfe",
