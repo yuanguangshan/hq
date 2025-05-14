@@ -150,17 +150,26 @@ async function fetchKline(code, retryCount = 0) {
 }
   
   // 定义需要获取的合约代码
-// let codes = ["im", "tam", "agm", "rbm", "pm"]
-
+// let codes = ["imm", "tam", "agm", "rbm", "pm"]
+let codes = ["imm", "aum", "ifm", "icm", "cum", "im", "ihm", "rbm", "agm", "ym", "tm", "hcm", "tlm", "cfm", "jmm", "pm", "oim", "tam"]
 // 完整代码列表，暂时注释掉以减少API请求数量
-let codes = Array.from(
-	new Set(Object.keys(code_to_mkt).map(code => code.toLowerCase() + 'm'))
-);
+// let codes = Array.from(
+// 	new Set(Object.keys(code_to_mkt).map(code => code.toLowerCase() + 'm'))
+// );
 
 // 最大重试次数
 const MAX_RETRIES = 3;
 // 重试延迟基础时间（毫秒）
 const BASE_RETRY_DELAY = 15000;
+
+// 新增常量
+const CHUNK_SIZE_REGULAR = 10; // 每批处理的常规代码数量
+const REQUEST_INTERVAL_REGULAR_CODE_IN_CHUNK = 10000; // 常规代码块中每个代码的请求间隔
+const INTER_CHUNK_PROCESSING_DELAY = 20000; // 常规代码块之间的处理延迟
+const SENSITIVE_CODE_REQUEST_INTERVAL = 20000; // 敏感代码请求间隔
+const SENSITIVE_CODE_COOLDOWN_TIME = 40000; // 敏感代码处理后的冷却时间
+const REGULAR_CODE_SINGLE_COOLDOWN_TIME = 5000; // 单个常规代码处理后的冷却时间 (用于 processSingleCodeWithRetries)
+const DB_OPERATION_BATCH_SIZE = 50; // 数据库批量操作的行数
   
   function getBeijingTime() {
 	let now = new Date(Date.now() + 8 * 3600 * 1000);
@@ -229,138 +238,200 @@ function isRateLimitError(error) {
   return error && (error.message || '').includes('Too many API requests');
 }
 
-// 智能处理代码列表，将敏感代码（如tam）分散处理
+// 新函数：批量插入来自多个代码的数据
+async function batchInsertMultipleCodesData(env, rowsToInsert) {
+  if (rowsToInsert.length === 0) return 0;
+
+  const stmt = env.DB.prepare(
+    "INSERT INTO minute_klines (timestamp, code, open, close, high, low, volume, amount, average, update_time) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+
+  let inserted = 0;
+  // DB_OPERATION_BATCH_SIZE 定义在文件顶部，例如 50
+
+  for (let i = 0; i < rowsToInsert.length; i += DB_OPERATION_BATCH_SIZE) {
+    const batch = rowsToInsert.slice(i, i + DB_OPERATION_BATCH_SIZE);
+    try {
+      await env.DB.batch(batch.map(row => {
+        return stmt.bind(
+          row.timestamp, row.code,
+          row.open, row.close, row.high, row.low, row.volume, row.amount, row.average,
+          row.update_time // update_time 应该在收集时加入到row对象中
+        );
+      }));
+      inserted += batch.length;
+      if (i + DB_OPERATION_BATCH_SIZE < rowsToInsert.length) {
+        await delay(100); // 短暂延时避免过度消耗DB资源
+      }
+    } catch (e) {
+      console.error(`数据库批量插入失败 (chunk):`, e);
+      // 尝试单条插入
+      for (const row of batch) {
+        try {
+          await stmt.bind(
+            row.timestamp, row.code,
+            row.open, row.close, row.high, row.low, row.volume, row.amount, row.average,
+            row.update_time
+          ).run();
+          inserted += 1;
+          await delay(50);
+        } catch (singleE) {
+          console.error(`数据库单条插入失败 (chunk fallback) for code ${row.code}:`, singleE);
+        }
+      }
+    }
+  }
+  return inserted;
+}
+
+// 新函数：处理一个常规代码块 (获取数据并批量插入)
+async function processRegularChunk(env, codeChunk, update_time) {
+  let allRowsForChunkDatabase = [];
+  let failedFetchingInChunk = [];
+
+  console.log(`开始处理常规代码块: ${codeChunk.join(', ')}`);
+
+  for (const code of codeChunk) {
+    const mkt = getMarket(code);
+    if (!mkt) {
+      console.error(`未找到代码 ${code} 对应的交易所 (in chunk)`);
+      failedFetchingInChunk.push(code);
+      continue;
+    }
+    // REQUEST_INTERVAL_REGULAR_CODE_IN_CHUNK 定义在文件顶部
+    await delay(REQUEST_INTERVAL_REGULAR_CODE_IN_CHUNK);
+    console.log(`从块中获取 ${code} 数据...`);
+    const klineRows = await fetchKline(code); // fetchKline 包含其自身的重试逻辑
+
+    if (klineRows && klineRows.length > 0) {
+      console.log(`成功获取 ${code} 的K线数据 ${klineRows.length} 条 (in chunk)`);
+      klineRows.forEach(row => allRowsForChunkDatabase.push({ ...row, code: code, update_time: update_time }));
+    } else {
+      console.error(`获取 ${code} 的K线数据失败或为空 (in chunk)`);
+      failedFetchingInChunk.push(code);
+    }
+  }
+
+  let insertedInChunk = 0;
+  if (allRowsForChunkDatabase.length > 0) {
+    console.log(`准备为代码块 ${codeChunk.join(', ')} 插入 ${allRowsForChunkDatabase.length} 条数据`);
+    insertedInChunk = await batchInsertMultipleCodesData(env, allRowsForChunkDatabase);
+    console.log(`代码块 ${codeChunk.join(', ')} 成功插入 ${insertedInChunk} 条数据`);
+  }
+
+  return { inserted: insertedInChunk, failed: failedFetchingInChunk };
+}
+
+// 新函数：处理单个代码（通常是敏感代码），包含特定逻辑和重试
+async function processSingleCodeWithRetries(env, code, update_time, isSensitive) {
+  let inserted = 0;
+  let failed = [];
+
+  const mkt = getMarket(code);
+  if (!mkt) {
+    console.error(`未找到代码 ${code} 对应的交易所`);
+    return { inserted: 0, failed: [code] };
+  }
+
+  const requestInterval = isSensitive ? SENSITIVE_CODE_REQUEST_INTERVAL : REQUEST_INTERVAL_REGULAR_CODE_IN_CHUNK; // 使用合适的间隔
+  const cooldownTime = isSensitive ? SENSITIVE_CODE_COOLDOWN_TIME : REGULAR_CODE_SINGLE_COOLDOWN_TIME;
+
+  try {
+    await delay(requestInterval);
+    console.log(`开始请求 ${code} 的K线数据... (single processing)`);
+    const klineRows = await fetchKline(code);
+
+    if (!klineRows) {
+      console.error(`获取 ${code} 的K线数据失败 (single processing)`);
+      failed.push(code);
+      return { inserted: 0, failed: failed };
+    }
+    console.log(`成功获取 ${code} 的K线数据，共 ${klineRows.length} 条 (single processing)`);
+
+    if (isSensitive && klineRows.length > 50) {
+      console.log(`${code} 数据量较大 (${klineRows.length}条)，将分批处理以避免API限制`);
+      const subBatchSize = 50;
+      let totalInsertedForSensitive = 0;
+      for (let i = 0; i < klineRows.length; i += subBatchSize) {
+        const dataSubBatch = klineRows.slice(i, i + subBatchSize);
+        console.log(`处理 ${code} 数据子批次 ${i / subBatchSize + 1}/${Math.ceil(klineRows.length / subBatchSize)}`);
+        try {
+          const batchInsertedCount = await batchInsertData(env, dataSubBatch, code, update_time); // 使用旧的 batchInsertData
+          totalInsertedForSensitive += batchInsertedCount;
+          console.log(`子批次插入成功: ${batchInsertedCount} 条`);
+          if (i + subBatchSize < klineRows.length) {
+            await delay(5000); // 子批次之间添加延时
+          }
+        } catch (e) {
+          console.error(`处理 ${code} 的子批次失败:`, e);
+          if (isRateLimitError(e)) {
+            console.log('检测到API限制，增加等待时间...');
+            await delay(30000);
+            // 可以选择重试子批次，或标记失败并继续
+          }
+        }
+      }
+      inserted += totalInsertedForSensitive;
+      console.log(`成功插入 ${code} (敏感，大批量) 的数据共 ${totalInsertedForSensitive} 条`);
+    } else {
+      const insertedCount = await batchInsertData(env, klineRows, code, update_time); // 使用旧的 batchInsertData
+      inserted += insertedCount;
+      console.log(`成功插入 ${code} 的数据 ${insertedCount} 条 (single processing)`);
+    }
+
+    await delay(cooldownTime);
+
+  } catch (e) {
+    console.error(`处理 ${code} 时发生错误 (single processing):`, e);
+    if (isRateLimitError(e)) {
+      console.log(`检测到API限制错误，将 ${code} 标记为失败`);
+      failed.push(code);
+      await delay(45000); // 遇到限制时等待较长时间
+    } else {
+      failed.push(code);
+      await delay(5000); // 其他错误等待较短时间
+    }
+  }
+  return { inserted, failed };
+}
+
+// 重写 processCodeList 函数
 async function processCodeList(env, codeList, update_time) {
-  // 将敏感代码（如tam）单独处理
   const sensitiveCode = 'tam';
   const regularCodes = codeList.filter(code => code !== sensitiveCode);
   const hasSensitiveCode = codeList.includes(sensitiveCode);
-  
-  let results = {
-    inserted: 0,
-    failed: []
-  };
-  
-  // 先处理常规代码
-  if (regularCodes.length > 0) {
-    console.log(`开始处理常规代码: ${regularCodes.join(', ')}`);
-    const regularResults = await processCodeBatch(env, regularCodes, update_time);
-    results.inserted += regularResults.inserted;
-    results.failed = [...results.failed, ...regularResults.failed];
-    
-    // 常规代码处理完后等待较长时间，确保API冷却
-    if (hasSensitiveCode) {
-      console.log('常规代码处理完毕，等待30秒后处理敏感代码...');
-      await delay(30000);
+
+  let results = { inserted: 0, failed: [] };
+
+  // CHUNK_SIZE_REGULAR 和 INTER_CHUNK_PROCESSING_DELAY 定义在文件顶部
+  console.log(`常规代码处理开始，每批 ${CHUNK_SIZE_REGULAR} 个，批间延迟 ${INTER_CHUNK_PROCESSING_DELAY / 1000}s`);
+  for (let i = 0; i < regularCodes.length; i += CHUNK_SIZE_REGULAR) {
+    const chunk = regularCodes.slice(i, i + CHUNK_SIZE_REGULAR);
+    const chunkResult = await processRegularChunk(env, chunk, update_time);
+    results.inserted += chunkResult.inserted;
+    results.failed.push(...chunkResult.failed);
+
+    if (i + CHUNK_SIZE_REGULAR < regularCodes.length) {
+      console.log(`常规代码块处理完毕，等待 ${INTER_CHUNK_PROCESSING_DELAY / 1000} 秒后处理下一块...`);
+      await delay(INTER_CHUNK_PROCESSING_DELAY);
     }
   }
-  
-  // 单独处理敏感代码
+  console.log('所有常规代码块处理完毕。');
+
   if (hasSensitiveCode) {
+    console.log('等待30秒后处理敏感代码...');
+    await delay(30000);
     console.log(`开始处理敏感代码: ${sensitiveCode}`);
-    const sensitiveResults = await processCodeBatch(env, [sensitiveCode], update_time, true);
-    results.inserted += sensitiveResults.inserted;
-    results.failed = [...results.failed, ...sensitiveResults.failed];
+    const sensitiveResult = await processSingleCodeWithRetries(env, sensitiveCode, update_time, true);
+    results.inserted += sensitiveResult.inserted;
+    results.failed.push(...sensitiveResult.failed);
+    console.log(`敏感代码 ${sensitiveCode} 处理完毕。`);
   }
-  
+
   return results;
 }
 
-// 处理一批代码
-async function processCodeBatch(env, codeBatch, update_time, isSensitive = false) {
-  let inserted = 0, failed = [];
-  const REQUEST_INTERVAL = isSensitive ? 20000 : 10000; // 敏感代码使用更长的间隔
-  
-  for (const code of codeBatch) {
-    console.log(`处理代码: ${code}`);
-    const mkt = getMarket(code);
-    if (!mkt) {
-      console.error(`未找到代码 ${code} 对应的交易所`);
-      failed.push(code);
-      continue;
-    }
-    
-    try {
-      // 添加请求前的延时，避免API限流
-      await delay(REQUEST_INTERVAL);
-      console.log(`开始请求 ${code} 的K线数据...`);
-      
-      const klineRows = await fetchKline(code);
-      if (!klineRows) { 
-        console.error(`获取 ${code} 的K线数据失败`);
-        failed.push(code); 
-        continue; 
-      }
-      console.log(`成功获取 ${code} 的K线数据，共 ${klineRows.length} 条`);
-      
-      // 对于敏感代码，进一步分批处理数据，每批之间增加额外延时
-      if (isSensitive && klineRows.length > 50) {
-        console.log(`${code} 数据量较大，将分批处理以避免API限制`);
-        const batchSize = 50;
-        let totalInserted = 0;
-        
-        for (let i = 0; i < klineRows.length; i += batchSize) {
-          const dataBatch = klineRows.slice(i, i + batchSize);
-          console.log(`处理 ${code} 数据批次 ${i/batchSize + 1}/${Math.ceil(klineRows.length/batchSize)}`);
-          
-          try {
-            const batchInserted = await batchInsertData(env, dataBatch, code, update_time);
-            totalInserted += batchInserted;
-            console.log(`批次插入成功: ${batchInserted} 条`);
-            
-            // 批次之间添加延时
-            if (i + batchSize < klineRows.length) {
-              await delay(5000);
-            }
-          } catch (e) {
-            console.error(`批次处理失败:`, e);
-            if (isRateLimitError(e)) {
-              console.log('检测到API限制，增加等待时间...');
-              await delay(30000); // 遇到限制时等待更长时间
-              
-              // 重试当前批次，但减小批次大小
-              try {
-                const smallerBatch = dataBatch.slice(0, dataBatch.length / 2);
-                const retryInserted = await batchInsertData(env, smallerBatch, code, update_time);
-                totalInserted += retryInserted;
-                console.log(`使用较小批次重试成功: ${retryInserted} 条`);
-              } catch (retryError) {
-                console.error(`重试失败:`, retryError);
-              }
-            }
-          }
-        }
-        
-        inserted += totalInserted;
-        console.log(`成功插入 ${code} 的数据共 ${totalInserted} 条`);
-      } else {
-        // 常规处理
-        const insertedCount = await batchInsertData(env, klineRows, code, update_time);
-        inserted += insertedCount;
-        console.log(`成功插入 ${code} 的数据 ${insertedCount} 条`);
-      }
-      
-      // 每个代码处理完成后添加额外的冷却时间
-      const cooldownTime = isSensitive ? REQUEST_INTERVAL * 2 : REQUEST_INTERVAL / 2;
-      await delay(cooldownTime);
-      
-    } catch (e) {
-      console.error(`处理 ${code} 时发生错误:`, e);
-      
-      if (isRateLimitError(e)) {
-        console.log(`检测到API限制错误，将 ${code} 标记为失败并继续处理其他代码`);
-        failed.push(code);
-        // 遇到限制时等待较长时间再继续
-        await delay(45000);
-      } else {
-        failed.push(code);
-        await delay(5000); // 其他错误等待较短时间
-      }
-    }
-  }
-  
-  return { inserted, failed };
-}
 
 async function fetchAndSaveAllCodes(env) {
 	const codeList = codes;
@@ -404,7 +475,7 @@ async function fetchAndSaveAllCodes(env) {
 	  }
 	  if (request.method === 'GET') {
 		const { results } = await env.DB.prepare(
-		  "SELECT distinct code FROM minute_klines ORDER BY timestamp DESC LIMIT 100"
+		  "SELECT code, COUNT(*) AS record_count FROM minute_klines GROUP BY code ORDER BY code DESC LIMIT 100"
 		).all();
 		return Response.json(results);
 	  }
